@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="description" content="カメを育てて、水槽をきれいに保ち、図鑑を集めよう！">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+<title>𓆉 カメを育てる</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#06191c;font-family:system-ui,sans-serif;color:white}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#ui{position:fixed;inset:0;pointer-events:none}
+.panel{background:rgba(3,22,25,.78);border:1px solid #ffffff22;backdrop-filter:blur(8px);border-radius:16px;padding:11px 14px;box-shadow:0 8px 25px #0005}
+.top{position:absolute;left:14px;right:14px;top:14px;display:flex;justify-content:space-between}
+.title{font-size:20px;font-weight:800}.hint{font-size:12px;opacity:.72}
+.status{width:190px}.bar{height:9px;background:#183b3e;border-radius:9px;overflow:hidden;margin-top:5px}.fill{height:100%;width:8%;background:#65d3bf;transition:.4s}
+#toast{position:absolute;top:86px;left:50%;transform:translate(-50%,-15px);opacity:0;transition:.25s;background:#061a1d;padding:12px 18px;border-radius:13px;font-weight:700}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+.buttons{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:8px;flex-wrap:wrap;justify-content:center;width:96%;pointer-events:auto}
+button{border:1px solid #ffffff22;border-radius:13px;background:#09272cdd;color:white;padding:11px 14px;font-weight:750;cursor:pointer;box-shadow:0 6px 18px #0005}button:active{transform:scale(.96)}
+#modal{display:none;position:fixed;inset:0;background:#0009;align-items:center;justify-content:center;padding:18px;pointer-events:auto}#modal.on{display:flex}
+.card{background:#102b2f;border:1px solid #ffffff22;border-radius:20px;padding:20px;width:min(720px,95vw);max-height:82vh;overflow:auto}.close{float:right}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:9px}.choice{padding:13px;border-radius:13px;background:#183c40;cursor:pointer;border:1px solid transparent}.choice:hover{border-color:#70e1cc}.choice small{display:block;opacity:.7;margin-top:5px}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui">
+ <div class="top">
+  <div class="panel"><div class="title">𓆉 カメを育てる</div><div class="hint">ドラッグ：360°見回す　ホイール：ズーム</div></div>
+  <div class="panel status"><b id="env">淡水の池</b><div class="hint">水質</div><div class="bar"><div class="fill" id="fill"></div></div><div class="hint" id="quality">きれい</div></div>
+ </div>
+ <div id="toast"></div>
+ <div class="buttons">
+  <button id="feed">🍃 エサ</button><button id="clean">🧽 カメを掃除</button><button id="add">𓆉 カメを追加</button><button id="change">🌿 環境を変える</button><button id="book">📖 図鑑</button><button id="house">🏠 家を作る</button>
+ </div>
+</div>
+<div id="modal"><div class="card"><button class="close" id="close">閉じる</button><div id="body"></div></div></div>
+<script>
+const c=document.getElementById('game'),ctx=c.getContext('2d');let W,H,dpr=1;
+function resize(){dpr=Math.min(devicePixelRatio,2);W=innerWidth;H=innerHeight;c.width=W*dpr;c.height=H*dpr;c.style.width=W+'px';c.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0)}addEventListener('resize',resize);resize();
+
+let yaw=0,zoom=1,drag=false,lx=0;
+c.onpointerdown=e=>{drag=true;lx=e.clientX;c.setPointerCapture(e.pointerId)}
+c.onpointermove=e=>{if(drag){yaw+=(e.clientX-lx)*.006;lx=e.clientX}}
+c.onpointerup=()=>drag=false;
+c.onwheel=e=>{zoom=Math.max(.65,Math.min(1.55,zoom-e.deltaY*.0008))};
+
+let water=8, env=0, turtles=[],food=[],drops=[],houseParts=[];
+let feedingCare=100, houseCare=100, turtleClean=100, lastCareTick=performance.now();
+let lastNeglectNotice=0;
+const envs=[['淡水の池','青緑の淡水'],['サンゴ礁','明るい海水'],['日本の川','透明な川'],['冷水の池','冷たい青い水']];
+function turtle(){
+ return {
+  x:(Math.random()-.5)*.82,z:(Math.random()-.5)*.55,
+  a:Math.random()*6.28,s:.7+Math.random()*.28,
+  spd:.0011+Math.random()*.0032,
+  turn:(Math.random()-.5)*.018,
+  phase:Math.random()*20,
+  flee:0,health:100
+ }
+}
+for(let i=0;i<3;i++)turtles.push(turtle());
+
+function toast(s){let e=document.getElementById('toast');e.textContent=s;e.classList.add('on');clearTimeout(window.t);window.t=setTimeout(()=>e.classList.remove('on'),1700)}
+let lastDeathCheck=0;
+function waterUI(){
+ let f=document.getElementById('fill');f.style.width=water+'%';
+ let q=document.getElementById('quality');
+ q.textContent=water<25?'きれい':water<55?'少し汚れています':water<80?'かなり汚れています':'危険：水質が悪化しています';
+ f.style.background=water<25?'#65d3bf':water<55?'#cbd86e':'#d5aa45';
+}
+function checkWaterDanger(time){
+ if(water<55 || turtles.length===0) return;
+ if(time-lastDeathCheck<5000) return;
+ lastDeathCheck=time;
+ let chance=water>=90?.55:water>=80?.30:.10;
+ if(Math.random()<chance){
+   let count=water>=90?(Math.random()<.35?2:1):1;
+   count=Math.min(count,turtles.length);
+   for(let i=0;i<count;i++){
+     const idx=Math.floor(Math.random()*turtles.length);
+     turtles.splice(idx,1);
+   }
+   toast(count>1?'水質が悪化し、カメが何匹か亡くなりました':'水質が悪化し、カメが亡くなりました');
+ }
+}
+function feed(){
+ for(let i=0;i<12;i++)food.push({x:(Math.random()-.5)*.85,z:(Math.random()-.5)*.5,y:0.95,vy:.004+Math.random()*.003});
+ water=Math.min(100,water+10);
+ feedingCare=Math.min(100,feedingCare+24);
+ waterUI();toast('エサがパラパラ落ちてきた！');
+}
+function add(){
+ for(const t of turtles){
+  t.flee=1.8;
+  t.a += Math.PI + (Math.random()-.5)*.8;
+  t.spd=Math.max(t.spd,.006);
+ }
+ turtles.push(turtle());
+ turtles[turtles.length-1].flee=1.0;
+ turtles[turtles.length-1].a=Math.random()*6.28;
+ for(let i=0;i<18;i++)drops.push({x:(Math.random()-.5)*.10,z:(Math.random()-.5)*.10,y:.53,v:.012+Math.random()*.025,l:1});
+ toast('𓆉 ぽちゃん！ カメたちがびっくりして逃げた！')
+}
+function modal(content){document.getElementById('body').innerHTML=content;document.getElementById('modal').classList.add('on')}
+document.getElementById('close').onclick=()=>document.getElementById('modal').classList.remove('on');
+document.getElementById('feed').onclick=feed;document.getElementById('add').onclick=add;
+function cleanTurtle(){
+ turtleClean=100;
+ toast('🧽 カメをきれいにしました！');
+}
+document.getElementById('clean').onclick=cleanTurtle;
+
+
+document.getElementById('change').onclick=()=>modal('<h2>🌿 環境を変える</h2><div class="grid">'+envs.map((e,i)=>`<div class="choice" onclick="setEnv(${i})"><b>${e[0]}</b><small>${e[1]}</small></div>`).join('')+'</div>');
+window.setEnv=i=>{env=i;water=8;feedingCare=100;houseCare=100;turtleClean=100;turtles=[];food=[];document.getElementById('env').textContent=envs[i][0];waterUI();document.getElementById('modal').classList.remove('on');for(let j=0;j<3;j++)turtles.push(turtle());toast('環境を変更しました。飼育状態はリセットされました')};
+
+document.getElementById('book').onclick=()=>modal('<h2>📖 カメ図鑑</h2><div class="grid"><div class="choice"><b>ニホンイシガメ</b><small>日本の河川・池などに生息。水場と陸地の両方が必要。</small></div><div class="choice"><b>ミシシッピニオイガメ</b><small>小型の水ガメ。水中を好み、休める場所も必要。</small></div><div class="choice"><b>？？？？？</b><small>まだ発見していません</small></div><div class="choice"><b>？？？？？</b><small>まだ発見していません</small></div></div><p class="hint">実際の飼育では種類ごとの水温・紫外線・水質・食事などを確認してください。</p>');
+document.getElementById('house').onclick=()=>modal('<h2>🏠 家を作る</h2><p>最大8パーツ。押すたびに水槽へ追加します。</p><div class="grid">'+['壁','屋根','ドア','窓','木','花','柵','ランプ'].map((x,i)=>`<div class="choice" onclick="house(${i})"><b>${x}</b><small>3D風パーツを配置</small></div>`).join('')+'</div>');
+window.house=i=>{
+ if(houseParts.length>=8)return toast('最大8パーツです');
+ houseParts.push({i,x:(houseParts.length%4-.5)*.18,z:(Math.floor(houseParts.length/4)-.5)*.16});
+ houseCare=Math.min(100,houseCare+12);
+ toast('家のパーツを追加！');
+};
+
+function project(x,z,y=0){let ca=Math.cos(yaw),sa=Math.sin(yaw);let X=x*ca-z*sa,Z=x*sa+z*ca;let scale=zoom*(1-Z*.06);return [W/2+X*W*.38*scale,H*.54-Z*H*.12*scale-y*H*.12*scale,scale]}
+function roundRect(x,y,w,h,r,fill){ctx.fillStyle=fill;ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill()}
+function drawTurtle(t,time){
+ 
+ // Each turtle has its own route, speed and turning rhythm.
+ // They deliberately do not flock or follow one another.
+ const dt=time*.001;
+ if(t.flee>0){
+   t.flee-=.016;
+   t.a += Math.sin(dt*8+t.phase)*.045;
+   t.spd += .00005;
+ }else{
+   t.a += t.turn + Math.sin(dt*.7+t.phase)*.0035;
+   t.turn += Math.sin(dt*.35+t.phase)*.00035;
+   t.turn=Math.max(-.025,Math.min(.025,t.turn));
+   t.spd += Math.sin(dt*.8+t.phase)*.000025;
+ }
+ t.x+=Math.cos(t.a)*t.spd;
+ t.z+=Math.sin(t.a)*t.spd;
+ if(Math.abs(t.x)>.48){t.a=Math.PI-t.a+(Math.random()-.5)*.5;t.x=Math.max(-.48,Math.min(.48,t.x))}
+ if(Math.abs(t.z)>.32){t.a=-t.a+(Math.random()-.5)*.5;t.z=Math.max(-.32,Math.min(.32,t.z))}
+ let [x,y,s]=project(t.x,t.z,.16);
+ ctx.save();ctx.translate(x,y);ctx.rotate(Math.atan2(Math.sin(t.a),Math.cos(t.a))+Math.PI/2);
+ let sc=70*s*t.s;ctx.scale(sc/70,sc/70);
+ ctx.fillStyle='#365b36';ctx.beginPath();ctx.ellipse(0,0,38,26,0,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#9d9552';ctx.beginPath();ctx.ellipse(0,7,28,11,0,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#658b4b';ctx.beginPath();ctx.ellipse(0,-29,13,12,0,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#111';ctx.beginPath();ctx.arc(-5,-32,2.2,0,7);ctx.arc(5,-32,2.2,0,7);ctx.fill();
+ ctx.strokeStyle='#6f8750';ctx.lineWidth=4;for(let a of [-.75,.75]){ctx.beginPath();ctx.moveTo(a*25,8);ctx.lineTo(a*43,20);ctx.stroke();ctx.beginPath();ctx.moveTo(a*25,-5);ctx.lineTo(a*43,-18);ctx.stroke()}
+ ctx.restore()
+}
+function checkNeglect(time){
+ const dt=Math.min(0.12,(time-lastCareTick)/1000);
+ lastCareTick=time;
+
+ // Neglect slowly accumulates. Feeding too little, a dirty house, and not cleaning turtles
+ // each reduce care quality independently.
+ feedingCare=Math.max(0,feedingCare-dt*0.42);
+ houseCare=Math.max(0,houseCare-dt*0.28);
+ turtleClean=Math.max(0,turtleClean-dt*0.34);
+
+ const neglect=(100-feedingCare)+(100-houseCare)+(100-turtleClean);
+ if(neglect>150 && time-lastNeglectNotice>6500){
+   lastNeglectNotice=time;
+   toast('飼育のお手入れが不足しています…');
+ }
+
+ // The longer neglect continues, the greater the chance of losing one or more turtles.
+ if(turtles.length && neglect>190 && time-lastDeathCheck>7000){
+   lastDeathCheck=time;
+   let chance=Math.min(.38,(neglect-190)/220);
+   if(Math.random()<chance){
+     let count=(neglect>235 && Math.random()<.32)?2:1;
+     count=Math.min(count,turtles.length);
+     for(let i=0;i<count;i++) turtles.splice(Math.floor(Math.random()*turtles.length),1);
+     toast(count>1?'お手入れ不足でカメが何匹か亡くなりました':'お手入れ不足でカメが亡くなりました');
+   }
+ }
+}
+
+function draw(){
+ let time=performance.now(), t=time*.001;
+ checkNeglect(time);
+ checkWaterDanger(time);
+ let sky=ctx.createLinearGradient(0,0,0,H);sky.addColorStop(0,'#071d24');sky.addColorStop(1,'#123f42');ctx.fillStyle=sky;ctx.fillRect(0,0,W,H);
+ // aquarium body
+ let wx=W*.08,wy=H*.13,ww=W*.84,wh=H*.68;
+ ctx.save();roundRect(wx,wy,ww,wh,25,'rgba(80,190,205,.18)');
+ ctx.clip();
+ let waterHue=water>75?'rgba(220,195,45,.38)':water>50?'rgba(205,185,70,.25)':'rgba(40,170,180,.18)';
+ ctx.fillStyle=waterHue;ctx.fillRect(wx,wy+wh*.12,ww,wh*.88);
+ // sand
+ ctx.fillStyle=env===1?'#e7d5a3':env===2?'#a99a72':env===3?'#c6d3d0':'#c7aa72';ctx.fillRect(wx,wy+wh*.79,ww,wh*.21);
+ // rocks
+ for(let i=0;i<9;i++){let xx=wx+((i*137)%ww),yy=wy+wh*.79+Math.sin(i)*10;ctx.fillStyle='#52615d';ctx.beginPath();ctx.ellipse(xx,yy,18+i%3*7,10+i%2*4,0,0,7);ctx.fill()}
+ // plants
+ for(let i=0;i<13;i++){let xx=wx+((i*83)%ww),base=wy+wh*.79;ctx.strokeStyle=i%2?'#397d55':'#4d9b63';ctx.lineWidth=5;for(let j=0;j<3;j++){ctx.beginPath();ctx.moveTo(xx,base);ctx.quadraticCurveTo(xx-15+j*12,base-35,xx-8+j*9,base-70);ctx.stroke()}}
+ // light rays
+ for(let i=0;i<7;i++){ctx.fillStyle='rgba(210,250,240,.035)';ctx.beginPath();ctx.moveTo(wx+i*ww/6,wy);ctx.lineTo(wx+i*ww/6+70,wy);ctx.lineTo(wx+i*ww/6+160,wy+wh);ctx.lineTo(wx+i*ww/6+70,wy+wh);ctx.fill()}
+ turtles.forEach(q=>drawTurtle(q,time));
+ // food
+ food.forEach(f=>{f.y-=f.vy;let [x,y,s]=project(f.x,f.z,f.y);ctx.fillStyle='#7b5124';ctx.beginPath();ctx.arc(x,y,5*s,0,7);ctx.fill()});
+ // splashes
+ drops.forEach(d=>{d.y+=d.v;d.l-=.018;let [x,y,s]=project(d.x,d.z,d.y);ctx.fillStyle=`rgba(200,250,255,${Math.max(0,d.l)})`;ctx.beginPath();ctx.arc(x,y,4*s,0,7);ctx.fill()});
+ houseParts.forEach(h=>{let [x,y,s]=project(h.x,h.z,.18);ctx.fillStyle=['#79543c','#704a35','#553b2d','#9bcfe0','#4d7d45','#e7a2b9','#806b48','#ffd86d'][h.i];ctx.fillRect(x-22*s,y-18*s,44*s,36*s)});
+ ctx.restore();
+ // glass frame
+ ctx.strokeStyle='rgba(220,250,255,.35)';ctx.lineWidth=4;ctx.strokeRect(wx,wy,ww,wh);
+ // surface
+ ctx.strokeStyle='rgba(210,255,255,.35)';ctx.lineWidth=2;ctx.beginPath();for(let x=wx;x<wx+ww;x+=8)ctx.lineTo(x,wy+wh*.12+Math.sin(t*1.5+x*.025)*3);ctx.stroke();
+ food=food.filter(f=>f.y>0.02);drops=drops.filter(d=>d.l>0);
+ requestAnimationFrame(draw)
+}
+waterUI();draw();
+</script>
+</body></html>
